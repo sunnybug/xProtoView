@@ -1,0 +1,7 @@
+{
+  "files.exclude": {
+    ".temp": true,
+    "obj": true,
+    ".dist": true
+  }
+}

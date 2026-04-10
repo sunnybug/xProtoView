@@ -1,0 +1,22 @@
+name: publish
+
+on:
+  push:
+    paths:
+      - "src/xProtoView/xProtoView.csproj"
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Init
+        shell: pwsh
+        run: ./script/init_dev.ps1
+      - name: Build release
+        shell: pwsh
+        run: ./script/publish.ps1

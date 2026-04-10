@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "构建并运行 Debug",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build-debug",
+      "program": "${workspaceFolder}/.run/xProtoView.exe",
+      "cwd": "${workspaceFolder}/.run",
+      "stopAtEntry": false,
+      "console": "internalConsole"
+    }
+  ]
+}

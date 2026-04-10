@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "wpf-best-practices": {
+      "source": "jcurbelo/skills",
+      "sourceType": "github",
+      "computedHash": "34ce37d1bb9e181c44d11ff7b467eeac3431cbfcdb8846c48066168fd2adae7a"
+    }
+  }
+}
