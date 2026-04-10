@@ -5,14 +5,16 @@ namespace xProtoView;
 public sealed class SettingsDialog : Form
 {
     private readonly AppConfig _editingConfig;
+    private readonly Action<WindowLayoutConfig> _onLayoutChanged;
     private readonly Label _lblConfigPath = new() { AutoSize = true };
     private readonly ListBox _lstPaths = new() { Dock = DockStyle.Fill };
 
     public AppConfig? UpdatedConfig { get; private set; }
 
-    public SettingsDialog(string configPath, AppConfig config)
+    public SettingsDialog(string configPath, AppConfig config, Action<WindowLayoutConfig> onLayoutChanged)
     {
         _editingConfig = config;
+        _onLayoutChanged = onLayoutChanged;
         Text = "设置";
         StartPosition = FormStartPosition.CenterParent;
         MinimumSize = new Size(860, 560);
@@ -20,6 +22,15 @@ public sealed class SettingsDialog : Form
 
         BuildUi(configPath);
         RenderSettings();
+        // 打开时恢复设置窗口布局。
+        WindowLayoutHelper.ApplyLayout(this, _editingConfig.Ui.SettingsDialog);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        // 关闭时回传设置窗口布局。
+        _onLayoutChanged(WindowLayoutHelper.CaptureLayout(this));
     }
 
     private void BuildUi(string configPath)

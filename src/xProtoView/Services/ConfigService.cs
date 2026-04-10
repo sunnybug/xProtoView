@@ -35,6 +35,14 @@ public sealed class ConfigService
         var text = File.ReadAllText(path);
         var cfg = _deserializer.Deserialize<AppConfig>(text) ?? AppConfig.Default();
         cfg.Proto ??= new ProtoConfig();
+        cfg.Ui ??= new UiConfig();
+        cfg.Ui.MainWindow ??= new WindowLayoutConfig();
+        cfg.Ui.SettingsDialog ??= new WindowLayoutConfig();
+        cfg.Ui.YamlViewer ??= new WindowLayoutConfig();
+        if (cfg.Ui.YamlViewerSplitterDistance <= 0)
+        {
+            cfg.Ui.YamlViewerSplitterDistance = null;
+        }
         cfg.Proto.PathEntries = NormalizePathEntries(cfg.Proto.PathEntries, cfg.Proto.Paths);
         cfg.Proto.Paths = cfg.Proto.PathEntries
             .Select(x => x.Path)
@@ -47,6 +55,14 @@ public sealed class ConfigService
     public void WriteConfig(AppConfig config)
     {
         config.Proto ??= new ProtoConfig();
+        config.Ui ??= new UiConfig();
+        config.Ui.MainWindow ??= new WindowLayoutConfig();
+        config.Ui.SettingsDialog ??= new WindowLayoutConfig();
+        config.Ui.YamlViewer ??= new WindowLayoutConfig();
+        if (config.Ui.YamlViewerSplitterDistance <= 0)
+        {
+            config.Ui.YamlViewerSplitterDistance = null;
+        }
         config.Proto.PathEntries = NormalizePathEntries(config.Proto.PathEntries, config.Proto.Paths);
         config.Proto.Paths = config.Proto.PathEntries
             .Select(x => x.Path)

@@ -1,18 +1,37 @@
 using System.Text.RegularExpressions;
+using xProtoView.Services;
 using YamlDotNet.RepresentationModel;
 
 namespace xProtoView;
 
 public sealed class YamlViewerForm : Form
 {
+    private readonly Action<WindowLayoutConfig, int> _onLayoutChanged;
     private readonly TreeView _treeYaml = new() { Dock = DockStyle.Fill, HideSelection = false };
     private readonly RichTextBox _txtYaml = new() { Dock = DockStyle.Fill, ReadOnly = true, WordWrap = false, DetectUrls = false, BorderStyle = BorderStyle.FixedSingle };
+    private readonly SplitContainer _split = new() { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 420 };
 
-    public YamlViewerForm(string yamlText)
+    public YamlViewerForm(
+        string yamlText,
+        WindowLayoutConfig layout,
+        int? splitterDistance,
+        Action<WindowLayoutConfig, int> onLayoutChanged)
     {
+        _onLayoutChanged = onLayoutChanged;
         InitializeWindow();
         BuildLayout();
+        // 打开时恢复 YAML 窗口布局。
+        WindowLayoutHelper.ApplyLayout(this, layout);
+        // 窗口显示后恢复分栏位置，避免越界异常。
+        Shown += (_, _) => ApplySplitterDistance(splitterDistance);
         LoadYaml(yamlText);
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        // 关闭时回传 YAML 窗口布局和分栏位置。
+        _onLayoutChanged(WindowLayoutHelper.CaptureLayout(this), _split.SplitterDistance);
     }
 
     // 初始化弹窗窗口属性。
@@ -43,12 +62,11 @@ public sealed class YamlViewerForm : Form
         btnCopy.Click += (_, _) => Clipboard.SetText(_txtYaml.Text);
         btnRow.Controls.Add(btnCopy);
 
-        var split = new SplitContainer { Dock = DockStyle.Fill, Orientation = Orientation.Vertical, SplitterDistance = 420 };
-        split.Panel1.Controls.Add(_treeYaml);
-        split.Panel2.Controls.Add(_txtYaml);
+        _split.Panel1.Controls.Add(_treeYaml);
+        _split.Panel2.Controls.Add(_txtYaml);
 
         root.Controls.Add(btnRow, 0, 0);
-        root.Controls.Add(split, 0, 1);
+        root.Controls.Add(_split, 0, 1);
         Controls.Add(root);
     }
 
@@ -229,5 +247,23 @@ public sealed class YamlViewerForm : Form
         }
 
         return Color.DarkGreen;
+    }
+
+    // 在当前窗口宽度内安全应用分栏距离。
+    private void ApplySplitterDistance(int? splitterDistance)
+    {
+        if (splitterDistance is null)
+        {
+            return;
+        }
+
+        var minDistance = Math.Max(_split.Panel1MinSize, 100);
+        var maxDistance = Math.Max(minDistance, _split.Width - Math.Max(_split.Panel2MinSize, 100));
+        if (maxDistance <= minDistance)
+        {
+            return;
+        }
+
+        _split.SplitterDistance = Math.Clamp(splitterDistance.Value, minDistance, maxDistance);
     }
 }
