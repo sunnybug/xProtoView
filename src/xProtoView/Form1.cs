@@ -8,14 +8,19 @@ public partial class Form1 : Form
     private readonly ProtoFileService _protoFileService = new();
     private readonly ProtocDecoder _decoder = new();
     private readonly ProtoTextYamlConverter _yamlConverter = new();
+    private readonly UpdateService _updateService = new();
 
     private AppConfig _config = AppConfig.Default();
     private List<string> _protoFiles = [];
     private List<string> _messageTypes = [];
     private bool _isFilteringMessageType;
+    private UpdateInfo? _availableUpdate;
 
     private readonly MenuStrip _menuStrip = new();
     private readonly ToolStripMenuItem _menuSettings = new("设置");
+    private readonly ToolStripMenuItem _menuHelp = new("帮助");
+    private readonly ToolStripMenuItem _menuUpdate = new("更新") { Visible = false };
+    private readonly ToolStripMenuItem _menuAbout = new("关于");
     // 底部状态栏统一承载提示信息。
     private readonly StatusStrip _statusStrip = new();
     private readonly ToolStripStatusLabel _statusLabel = new() { Spring = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -37,6 +42,7 @@ public partial class Form1 : Form
         _config = _configService.ReadConfig();
         WindowLayoutHelper.ApplyLayout(this, _config.Ui.MainWindow);
         await ReloadConfigAndProtosAsync();
+        await CheckForUpdateOnStartupAsync();
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -72,7 +78,11 @@ public partial class Form1 : Form
     private void BuildMenu()
     {
         _menuSettings.Click += async (_, _) => await OpenSettingsDialogAsync();
+        _menuUpdate.Click += async (_, _) => await UpdateToLatestAsync();
+        _menuAbout.Click += (_, _) => ShowAboutDialog();
+        _menuHelp.DropDownItems.AddRange([_menuUpdate, _menuAbout]);
         _menuStrip.Items.Add(_menuSettings);
+        _menuStrip.Items.Add(_menuHelp);
     }
 
     private void BuildStatusBar()
@@ -224,6 +234,29 @@ public partial class Form1 : Form
         await Task.CompletedTask;
     }
 
+    // 启动时检查新版本，仅在可自动更新时显示菜单。
+    private async Task CheckForUpdateOnStartupAsync()
+    {
+        try
+        {
+            _availableUpdate = await _updateService.CheckForUpdateAsync(UpdateService.GetCurrentVersion());
+            if (_availableUpdate is null)
+            {
+                _menuUpdate.Visible = false;
+                return;
+            }
+
+            _menuUpdate.Visible = true;
+            _menuUpdate.Text = $"更新（{_availableUpdate.LatestVersion}）";
+            SetStatus($"发现新版本：{_availableUpdate.LatestVersion}");
+        }
+        catch (Exception ex)
+        {
+            _menuUpdate.Visible = false;
+            SetStatus($"检查更新失败：{ex.Message}");
+        }
+    }
+
     private void ApplyMessageTypeFilter(string keyword)
     {
         // 过滤过程中忽略重入事件，避免重复刷新。
@@ -323,6 +356,56 @@ public partial class Form1 : Form
             SetStatus(ex.Message);
         }
         await Task.CompletedTask;
+    }
+
+    // 用户确认后开始更新并退出当前进程。
+    private async Task UpdateToLatestAsync()
+    {
+        try
+        {
+            if (_availableUpdate is null)
+            {
+                throw new InvalidOperationException("当前没有可用更新。");
+            }
+
+            var result = MessageBox.Show(
+                this,
+                $"检测到新版本 {_availableUpdate.LatestVersion}，是否立即更新？{Environment.NewLine}当前版本：{_availableUpdate.CurrentVersion}",
+                "更新确认",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+            if (result != DialogResult.Yes)
+            {
+                SetStatus("已取消更新");
+                return;
+            }
+
+            SetStatus("正在准备更新，请稍候...");
+            await _updateService.StartUpdateAsync(_availableUpdate);
+            MessageBox.Show(
+                this,
+                "更新任务已启动，程序关闭后将自动替换并重启。",
+                "更新",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+            Close();
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"更新失败：{ex.Message}");
+            MessageBox.Show(this, $"更新失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    // “关于”窗口展示项目基础信息。
+    private void ShowAboutDialog()
+    {
+        var message =
+            $"工程名：{UpdateService.ProjectName}{Environment.NewLine}" +
+            $"GitHub：{UpdateService.RepositoryUrl}{Environment.NewLine}" +
+            $"作者：{UpdateService.Author}{Environment.NewLine}" +
+            $"版本：{UpdateService.GetCurrentVersion()}";
+        MessageBox.Show(this, message, "关于", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
 
     private async Task OpenSettingsDialogAsync()

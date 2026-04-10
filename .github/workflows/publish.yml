@@ -5,18 +5,124 @@ on:
     paths:
       - "src/xProtoView/xProtoView.csproj"
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $projectFile = "src/xProtoView/xProtoView.csproj"
+          if (-not (Test-Path -LiteralPath $projectFile -PathType Leaf)) {
+            throw "读取版本失败：未找到项目文件 $projectFile"
+          }
+
+          [xml]$proj = Get-Content -LiteralPath $projectFile -Raw
+          $versionNode = $proj.Project.PropertyGroup.Version | Select-Object -First 1
+          if ([string]::IsNullOrWhiteSpace($versionNode)) {
+            throw "读取版本失败：$projectFile 中缺少 <Version> 节点"
+          }
+
+          $version = $versionNode.Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+(\.\d+)?$') {
+            throw "读取版本失败：版本号格式不受支持：$version。仅支持 n.n.n 或 n.n.n.n。"
+          }
+
+          $tag = "v$version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      - name: Check remote tag
+        id: tag_check
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ steps.version.outputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "检查 tag 失败：tag 为空。"
+          }
+
+          git fetch --tags --force --quiet
+          $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+          if ([string]::IsNullOrWhiteSpace($remoteTag)) {
+            "exists=false" >> $env:GITHUB_OUTPUT
+          }
+          else {
+            "exists=true" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Setup .NET
+        if: steps.tag_check.outputs.exists == 'false'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+
       - name: Init
+        if: steps.tag_check.outputs.exists == 'false'
         shell: pwsh
         run: ./script/init_dev.ps1
+
       - name: Build release
+        if: steps.tag_check.outputs.exists == 'false'
         shell: pwsh
         run: ./script/publish.ps1
+
+      - name: Package release zip
+        if: steps.tag_check.outputs.exists == 'false'
+        id: package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $version = "${{ steps.version.outputs.version }}"
+          $distDir = Join-Path $PWD ".dist"
+          $sourceDir = Join-Path $distDir "xProtoView-$version"
+          if (-not (Test-Path -LiteralPath $sourceDir -PathType Container)) {
+            throw "打包失败：未找到发布目录 $sourceDir，请先检查 script/publish.ps1 输出。"
+          }
+
+          $zipPath = Join-Path $distDir "xProtoView-$version-win-x64.zip"
+          if (Test-Path -LiteralPath $zipPath -PathType Leaf) {
+            Remove-Item -LiteralPath $zipPath -Force
+          }
+
+          Compress-Archive -Path (Join-Path $sourceDir "*") -DestinationPath $zipPath -CompressionLevel Optimal -Force
+          if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+            throw "打包失败：未生成 zip 文件 $zipPath"
+          }
+
+          "asset_path=$zipPath" >> $env:GITHUB_OUTPUT
+
+      - name: Create and push tag
+        if: steps.tag_check.outputs.exists == 'false'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $tag = "${{ steps.version.outputs.tag }}"
+          $version = "${{ steps.version.outputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($tag) -or [string]::IsNullOrWhiteSpace($version)) {
+            throw "创建 tag 失败：版本信息为空。"
+          }
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a $tag -m "Release $version"
+          git push origin "refs/tags/$tag"
+
+      - name: Create GitHub Release
+        if: steps.tag_check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: xProtoView ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: ${{ steps.package.outputs.asset_path }}
