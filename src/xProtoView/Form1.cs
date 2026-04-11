@@ -128,9 +128,19 @@ public partial class Form1 : Form
         actionRow.Controls.Add(new Label { Text = "Message 类型（必填）", AutoSize = true, Padding = new Padding(0, 8, 8, 0) }, 0, 0);
         _cmbMessageType.Dock = DockStyle.Fill;
         // 输入时实时过滤 message 类型，便于快速定位。
-        _cmbMessageType.TextUpdate += (_, _) => ApplyMessageTypeFilter(_cmbMessageType.Text);
-        // 展开下拉时按当前输入文本同步过滤结果。
-        _cmbMessageType.DropDown += (_, _) => ApplyMessageTypeFilter(_cmbMessageType.Text);
+        _cmbMessageType.TextUpdate += (_, _) =>
+            ApplyMessageTypeFilter(_cmbMessageType.Text, _cmbMessageType.SelectionStart, expandDropDown: true);
+        // 手动展开下拉时强制显示全量列表，避免输入文本导致候选被隐藏。
+        _cmbMessageType.DropDown += (_, _) =>
+        {
+            // 输入触发的程序化展开不干预，保持当前过滤结果。
+            if (_isFilteringMessageType)
+            {
+                return;
+            }
+            // 延迟到展开流程之后刷新，避免打断原生展开行为。
+            BeginInvoke(() => ApplyMessageTypeFilter(string.Empty, null, expandDropDown: true));
+        };
         actionRow.Controls.Add(_cmbMessageType, 1, 0);
 
         // 操作按钮固定为单行布局，避免窗口缩放时被裁剪隐藏。
@@ -257,7 +267,7 @@ public partial class Form1 : Form
         }
     }
 
-    private void ApplyMessageTypeFilter(string keyword)
+    private void ApplyMessageTypeFilter(string keyword, int? caretPosition, bool expandDropDown = false)
     {
         // 过滤过程中忽略重入事件，避免重复刷新。
         if (_isFilteringMessageType)
@@ -265,10 +275,11 @@ public partial class Form1 : Form
             return;
         }
 
-        var text = keyword.Trim();
-        var filtered = string.IsNullOrEmpty(text)
+        // 将空白分隔文本视为多关键字，要求全部命中（无顺序要求）。
+        var keywords = keyword.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var filtered = keywords.Length == 0
             ? _messageTypes
-            : _messageTypes.Where(x => x.Contains(text, StringComparison.OrdinalIgnoreCase)).ToList();
+            : _messageTypes.Where(x => keywords.All(k => x.Contains(k, StringComparison.OrdinalIgnoreCase))).ToList();
 
         _isFilteringMessageType = true;
         try
@@ -276,9 +287,17 @@ public partial class Form1 : Form
             _cmbMessageType.BeginUpdate();
             _cmbMessageType.Items.Clear();
             _cmbMessageType.Items.AddRange(filtered.Cast<object>().ToArray());
-            _cmbMessageType.DroppedDown = filtered.Count > 0;
-            _cmbMessageType.Text = keyword;
-            _cmbMessageType.SelectionStart = keyword.Length;
+            if (caretPosition.HasValue)
+            {
+                // 刷新候选项后恢复光标，避免新输入字符插到文本开头。
+                _cmbMessageType.SelectionStart = Math.Clamp(caretPosition.Value, 0, _cmbMessageType.Text.Length);
+                _cmbMessageType.SelectionLength = 0;
+            }
+            if (expandDropDown)
+            {
+                // 仅在需要时保持展开，避免打断系统原生下拉流程。
+                _cmbMessageType.DroppedDown = filtered.Count > 0;
+            }
         }
         finally
         {

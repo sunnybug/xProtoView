@@ -19,6 +19,29 @@ public class Base64UtilTests
     }
 
     [Fact]
+    public void Decode_ShouldReturnBytes_WhenInputIsHex()
+    {
+        // 纯十六进制输入应被识别并正常解码。
+        var bytes = Base64Util.Decode("48656c6c6f");
+        Assert.Equal("Hello", System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    [Fact]
+    public void Decode_ShouldReturnBytes_WhenInputIsHexWithPrefixAndSeparators()
+    {
+        // 支持 0x 前缀与常见分隔符。
+        var bytes = Base64Util.Decode("0x48,0x65,0x6c-0x6c:0x6f");
+        Assert.Equal("Hello", System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    [Fact]
+    public void Decode_ShouldThrow_WhenHexLengthIsOdd()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => Base64Util.Decode("ABC"));
+        Assert.Contains("字符数为奇数", ex.Message);
+    }
+
+    [Fact]
     public void Encode_ShouldReturnBase64_WhenInputIsValid()
     {
         var text = Base64Util.Encode(System.Text.Encoding.UTF8.GetBytes("Hello"));
