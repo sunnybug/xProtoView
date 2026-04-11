@@ -1,4 +1,6 @@
+using System.Text.RegularExpressions;
 using xProtoView.Services;
+using YamlDotNet.RepresentationModel;
 
 namespace xProtoView;
 
@@ -27,7 +29,18 @@ public partial class Form1 : Form
     // Base64 文本框默认自动换行，便于查看长内容。
     private readonly TextBox _txtBase64 = new() { Multiline = true, ScrollBars = ScrollBars.Vertical, WordWrap = true, Height = 220, Dock = DockStyle.Fill };
     private readonly ComboBox _cmbMessageType = new() { DropDownStyle = ComboBoxStyle.DropDown };
+    // Proto 文本在 Proto 标签页中可编辑。
     private readonly TextBox _txtProto = new() { Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false, ReadOnly = false, Dock = DockStyle.Fill };
+    // YAML 高亮文本在 YAML 标签页中只读展示。
+    private readonly RichTextBox _txtYamlHighlighted = new() { Dock = DockStyle.Fill, ReadOnly = true, WordWrap = false, DetectUrls = false, BorderStyle = BorderStyle.FixedSingle };
+    // YAML 树在折叠标签页中展示层级结构。
+    private readonly TreeView _treeYaml = new() { Dock = DockStyle.Fill, HideSelection = false };
+    // 右侧使用三标签页承载 YAML/折叠/Proto 三种视图。
+    private readonly TabControl _tabProtoView = new() { Dock = DockStyle.Fill };
+    private readonly TabPage _tabYaml = new("YAML");
+    private readonly TabPage _tabYamlFold = new("YAML折叠");
+    private readonly TabPage _tabProto = new("Proto");
+    private bool _isYamlDirty = true;
 
     public Form1()
     {
@@ -156,27 +169,384 @@ public partial class Form1 : Form
         var btnDecode = new Button { Text = "base64->proto", AutoSize = true };
         btnDecode.Click += async (_, _) => await DecodeAsync();
         btnRow.Controls.Add(btnDecode);
-        var btnEncode = new Button { Text = "proto->base64", AutoSize = true };
-        btnEncode.Click += async (_, _) => await EncodeAsync();
-        btnRow.Controls.Add(btnEncode);
-        var btnYamlView = new Button { Text = "YAML 查看", AutoSize = true };
-        btnYamlView.Click += (_, _) => OpenYamlViewer();
-        btnRow.Controls.Add(btnYamlView);
         actionRow.Controls.Add(btnRow, 2, 0);
 
-        // 下半区包含操作行与 Proto 编辑区。
-        var protoPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3 };
+        // 下半区包含操作行与三标签页预览区。
+        var protoPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
         protoPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        protoPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         protoPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         protoPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         protoPanel.Controls.Add(actionRow, 0, 0);
-        protoPanel.Controls.Add(new Label { Text = "Proto 文本（可编辑）", AutoSize = true }, 0, 1);
-        protoPanel.Controls.Add(_txtProto, 0, 2);
+        protoPanel.Controls.Add(BuildProtoTabs(), 0, 1);
         split.Panel2.Controls.Add(protoPanel);
 
         root.Controls.Add(split);
         return root;
+    }
+
+    // 构建 YAML/折叠/Proto 三标签页。
+    private Control BuildProtoTabs()
+    {
+        ConfigureProtoTabsAppearance();
+        BuildYamlTab();
+        BuildYamlFoldTab();
+        BuildProtoTab();
+        _tabProtoView.TabPages.Clear();
+        _tabProtoView.TabPages.AddRange([_tabYaml, _tabYamlFold, _tabProto]);
+        // 默认进入 YAML 标签页。
+        _tabProtoView.SelectedTab = _tabYaml;
+        _tabProtoView.SelectedIndexChanged += (_, _) => OnProtoViewTabChanged();
+        // Proto 文本变更后标记 YAML 需重新生成。
+        _txtProto.TextChanged += (_, _) => _isYamlDirty = true;
+        // 初始为空时显示占位提示。
+        ShowYamlMessage("Proto 文本为空，暂无 YAML 预览。");
+        return _tabProtoView;
+    }
+
+    // 统一设置标签页外观，让标签间隔和选中态更清晰。
+    private void ConfigureProtoTabsAppearance()
+    {
+        _tabProtoView.DrawMode = TabDrawMode.OwnerDrawFixed;
+        _tabProtoView.Padding = new Point(16, 6);
+        _tabProtoView.DrawItem -= DrawProtoTabItem;
+        _tabProtoView.DrawItem += DrawProtoTabItem;
+    }
+
+    // 自绘标签标题并预留左右空隙，增强标签间视觉分隔。
+    private void DrawProtoTabItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _tabProtoView.TabPages.Count)
+        {
+            return;
+        }
+
+        var tabPage = _tabProtoView.TabPages[e.Index];
+        var isSelected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+        var tabRect = Rectangle.Inflate(e.Bounds, -4, -1);
+        var backColor = isSelected ? Color.White : Color.FromArgb(245, 245, 245);
+        var borderColor = isSelected ? SystemColors.Highlight : Color.Silver;
+
+        using var backBrush = new SolidBrush(backColor);
+        using var borderPen = new Pen(borderColor);
+        e.Graphics.FillRectangle(backBrush, tabRect);
+        e.Graphics.DrawRectangle(borderPen, tabRect);
+        TextRenderer.DrawText(
+            e.Graphics,
+            tabPage.Text,
+            _tabProtoView.Font,
+            tabRect,
+            SystemColors.ControlText,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+    }
+
+    // 构建 YAML 高亮文本标签页。
+    private void BuildYamlTab()
+    {
+        _tabYaml.Controls.Clear();
+        var yamlPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
+        yamlPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        yamlPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        yamlPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        yamlPanel.Controls.Add(new Label { Text = "YAML 预览（高亮）", AutoSize = true }, 0, 0);
+        _txtYamlHighlighted.Font = new Font("Consolas", 10.5f, FontStyle.Regular);
+        yamlPanel.Controls.Add(_txtYamlHighlighted, 0, 1);
+        _tabYaml.Controls.Add(yamlPanel);
+    }
+
+    // 构建 YAML 折叠树标签页。
+    private void BuildYamlFoldTab()
+    {
+        _tabYamlFold.Controls.Clear();
+        var foldPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
+        foldPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        foldPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        foldPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var btnRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
+        };
+        var btnExpand = new Button { Text = "展开全部", AutoSize = true };
+        btnExpand.Click += (_, _) => _treeYaml.ExpandAll();
+        btnRow.Controls.Add(btnExpand);
+        var btnCollapse = new Button { Text = "折叠全部", AutoSize = true };
+        btnCollapse.Click += (_, _) => _treeYaml.CollapseAll();
+        btnRow.Controls.Add(btnCollapse);
+
+        foldPanel.Controls.Add(btnRow, 0, 0);
+        foldPanel.Controls.Add(_treeYaml, 0, 1);
+        _tabYamlFold.Controls.Add(foldPanel);
+    }
+
+    // 构建 Proto 编辑标签页并放置编码按钮。
+    private void BuildProtoTab()
+    {
+        _tabProto.Controls.Clear();
+        var protoPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(8) };
+        protoPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        protoPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        protoPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        protoPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        var btnRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            WrapContents = false
+        };
+        var btnEncode = new Button { Text = "proto->base64", AutoSize = true };
+        btnEncode.Click += async (_, _) => await EncodeAsync();
+        btnRow.Controls.Add(btnEncode);
+
+        protoPanel.Controls.Add(btnRow, 0, 0);
+        protoPanel.Controls.Add(new Label { Text = "Proto 文本（可编辑）", AutoSize = true }, 0, 1);
+        protoPanel.Controls.Add(_txtProto, 0, 2);
+        _tabProto.Controls.Add(protoPanel);
+    }
+
+    // 切换到 YAML 相关标签页时刷新 YAML 预览。
+    private void OnProtoViewTabChanged()
+    {
+        if (_tabProtoView.SelectedTab != _tabYaml && _tabProtoView.SelectedTab != _tabYamlFold)
+        {
+            return;
+        }
+
+        if (!TryRefreshYamlViews(force: false, out var error) && !string.IsNullOrWhiteSpace(error))
+        {
+            SetStatus(error);
+        }
+    }
+
+    // 按需将当前 proto 文本转换为 YAML 并刷新两个标签页。
+    private bool TryRefreshYamlViews(bool force, out string? error)
+    {
+        error = null;
+        if (!force && !_isYamlDirty)
+        {
+            return true;
+        }
+
+        var protoText = _txtProto.Text;
+        if (string.IsNullOrWhiteSpace(protoText))
+        {
+            ShowYamlMessage("Proto 文本为空，暂无 YAML 预览。");
+            _isYamlDirty = false;
+            return true;
+        }
+
+        try
+        {
+            // 使用统一转换器生成 YAML 文本。
+            var yamlText = _yamlConverter.ConvertToYaml(protoText);
+            RenderYamlHighlightedText(yamlText);
+            RenderYamlTree(yamlText);
+            _isYamlDirty = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"YAML 转换失败：{ex.Message}";
+            ShowYamlMessage(error);
+            _isYamlDirty = false;
+            return false;
+        }
+    }
+
+    // 显示 YAML 占位或错误信息。
+    private void ShowYamlMessage(string message)
+    {
+        _txtYamlHighlighted.Text = message;
+        _txtYamlHighlighted.SelectAll();
+        _txtYamlHighlighted.SelectionColor = Color.Gray;
+        _txtYamlHighlighted.Select(0, 0);
+        _treeYaml.BeginUpdate();
+        _treeYaml.Nodes.Clear();
+        _treeYaml.Nodes.Add(new TreeNode(message) { ForeColor = Color.Gray });
+        _treeYaml.EndUpdate();
+    }
+
+    // 渲染 YAML 高亮文本。
+    private void RenderYamlHighlightedText(string yamlText)
+    {
+        _txtYamlHighlighted.Text = yamlText;
+        HighlightYamlText(yamlText);
+    }
+
+    // 解析 YAML 文本并渲染为可折叠树。
+    private void RenderYamlTree(string yamlText)
+    {
+        var stream = new YamlStream();
+        try
+        {
+            using var reader = new StringReader(yamlText);
+            stream.Load(reader);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"YAML 解析失败：{ex.Message}");
+        }
+
+        _treeYaml.BeginUpdate();
+        _treeYaml.Nodes.Clear();
+        var rootNode = new TreeNode("root") { ForeColor = Color.DarkBlue };
+        _treeYaml.Nodes.Add(rootNode);
+        if (stream.Documents.Count > 0 && stream.Documents[0].RootNode is not null)
+        {
+            AppendYamlNode(rootNode, stream.Documents[0].RootNode);
+        }
+        rootNode.Expand();
+        _treeYaml.EndUpdate();
+    }
+
+    // 对 YAML 文本执行简易语法高亮。
+    private void HighlightYamlText(string yamlText)
+    {
+        _txtYamlHighlighted.SuspendLayout();
+        _txtYamlHighlighted.SelectAll();
+        _txtYamlHighlighted.SelectionColor = Color.Black;
+
+        var lines = yamlText.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var offset = 0;
+        foreach (var line in lines)
+        {
+            HighlightYamlLine(line, offset);
+            offset += line.Length + 1;
+        }
+
+        _txtYamlHighlighted.Select(0, 0);
+        _txtYamlHighlighted.ResumeLayout();
+    }
+
+    // 按“键: 值”规则高亮 YAML 每一行。
+    private void HighlightYamlLine(string line, int lineOffset)
+    {
+        if (line.Length == 0)
+        {
+            return;
+        }
+
+        var colonIndex = line.IndexOf(':');
+        if (colonIndex > 0)
+        {
+            _txtYamlHighlighted.Select(lineOffset, colonIndex);
+            _txtYamlHighlighted.SelectionColor = Color.DarkBlue;
+            var value = line[(colonIndex + 1)..].Trim();
+            if (value.Length > 0)
+            {
+                var valueStart = line.IndexOf(value, colonIndex + 1, StringComparison.Ordinal);
+                _txtYamlHighlighted.Select(lineOffset + valueStart, value.Length);
+                _txtYamlHighlighted.SelectionColor = ResolveScalarColor(value);
+            }
+            return;
+        }
+
+        if (line.TrimStart().StartsWith("-", StringComparison.Ordinal))
+        {
+            var value = line.TrimStart()[1..].TrimStart();
+            if (value.Length > 0)
+            {
+                var valueStart = line.IndexOf(value, StringComparison.Ordinal);
+                _txtYamlHighlighted.Select(lineOffset + valueStart, value.Length);
+                _txtYamlHighlighted.SelectionColor = ResolveScalarColor(value);
+            }
+        }
+    }
+
+    // 递归渲染 YAML 节点到 TreeView。
+    private static void AppendYamlNode(TreeNode parent, YamlNode node)
+    {
+        if (node is YamlMappingNode mapNode)
+        {
+            foreach (var item in mapNode.Children)
+            {
+                var keyText = (item.Key as YamlScalarNode)?.Value ?? "<key>";
+                var keyNode = new TreeNode(keyText) { ForeColor = Color.DarkBlue };
+                parent.Nodes.Add(keyNode);
+                AppendValueNode(keyNode, item.Value);
+            }
+            return;
+        }
+
+        if (node is YamlSequenceNode seqNode)
+        {
+            var index = 0;
+            foreach (var child in seqNode.Children)
+            {
+                var itemNode = new TreeNode($"[{index}]") { ForeColor = Color.DimGray };
+                parent.Nodes.Add(itemNode);
+                AppendValueNode(itemNode, child);
+                index++;
+            }
+            return;
+        }
+
+        if (node is YamlScalarNode scalarNode)
+        {
+            var leafNode = new TreeNode(FormatScalarText(scalarNode))
+            {
+                ForeColor = ResolveScalarColor(scalarNode)
+            };
+            parent.Nodes.Add(leafNode);
+        }
+    }
+
+    // 渲染 value 节点并复用同一套递归逻辑。
+    private static void AppendValueNode(TreeNode parent, YamlNode valueNode)
+    {
+        if (valueNode is YamlScalarNode scalarNode)
+        {
+            parent.Text = $"{parent.Text}: {FormatScalarText(scalarNode)}";
+            parent.ForeColor = Color.DarkBlue;
+            return;
+        }
+        AppendYamlNode(parent, valueNode);
+    }
+
+    // 处理需要保留空白的标量显示。
+    private static string FormatScalarText(YamlScalarNode scalarNode)
+    {
+        var value = scalarNode.Value ?? "null";
+        if (Regex.IsMatch(value, @"^\s|\s$"))
+        {
+            return $"\"{value}\"";
+        }
+        return value;
+    }
+
+    private static Color ResolveScalarColor(YamlScalarNode scalarNode)
+    {
+        return ResolveScalarColor(scalarNode.Value ?? "null");
+    }
+
+    // 按标量值类型返回高亮颜色。
+    private static Color ResolveScalarColor(string value)
+    {
+        if (value.Equals("true", StringComparison.OrdinalIgnoreCase) || value.Equals("false", StringComparison.OrdinalIgnoreCase))
+        {
+            return Color.Teal;
+        }
+
+        if (value.Equals("null", StringComparison.OrdinalIgnoreCase) || value == "~")
+        {
+            return Color.Gray;
+        }
+
+        if (double.TryParse(value, out _))
+        {
+            return Color.MediumVioletRed;
+        }
+
+        if (value.StartsWith("\"", StringComparison.Ordinal) && value.EndsWith("\"", StringComparison.Ordinal))
+        {
+            return Color.SaddleBrown;
+        }
+
+        return Color.DarkGreen;
     }
 
     // 将最小面板尺寸与分割条统一限制在当前窗口允许范围内。
@@ -309,6 +679,8 @@ public partial class Form1 : Form
     private async Task DecodeAsync()
     {
         _txtProto.Text = string.Empty;
+        // 先清空 YAML 预览，避免失败后保留旧结果。
+        _ = TryRefreshYamlViews(force: true, out _);
         try
         {
             if (_protoFiles.Count == 0)
@@ -333,7 +705,14 @@ public partial class Form1 : Form
 
             var protoText = _decoder.DecodeToProtoText(bytes, selectedType, includeDirs, _protoFiles);
             _txtProto.Text = protoText;
-            SetStatus("解码成功");
+            if (TryRefreshYamlViews(force: true, out var yamlError))
+            {
+                SetStatus("解码成功");
+            }
+            else
+            {
+                SetStatus($"解码成功，但{yamlError}");
+            }
         }
         catch (Exception ex)
         {
@@ -499,33 +878,6 @@ public partial class Form1 : Form
         };
     }
 
-    private void OpenYamlViewer()
-    {
-        try
-        {
-            var protoText = _txtProto.Text;
-            // 空文本不允许转换，避免弹出空窗口。
-            if (string.IsNullOrWhiteSpace(protoText))
-            {
-                throw new InvalidOperationException("Proto 文本为空，无法转换为 YAML。");
-            }
-
-            // 将 proto 文本转换为 YAML 文本。
-            var yamlText = _yamlConverter.ConvertToYaml(protoText);
-            using var viewer = new YamlViewerForm(
-                yamlText,
-                _config.Ui.YamlViewer,
-                _config.Ui.YamlViewerSplitterDistance,
-                OnYamlViewerLayoutChanged);
-            viewer.ShowDialog(this);
-            SetStatus("YAML 转换成功");
-        }
-        catch (Exception ex)
-        {
-            SetStatus(ex.Message);
-        }
-    }
-
     // 记录设置窗口布局并立即持久化。
     private void OnSettingsDialogLayoutChanged(WindowLayoutConfig layout)
     {
@@ -537,21 +889,6 @@ public partial class Form1 : Form
         catch (Exception ex)
         {
             SetStatus($"保存设置窗口布局失败：{ex.Message}");
-        }
-    }
-
-    // 记录 YAML 窗口布局和分栏位置并立即持久化。
-    private void OnYamlViewerLayoutChanged(WindowLayoutConfig layout, int splitterDistance)
-    {
-        try
-        {
-            _config.Ui.YamlViewer = layout;
-            _config.Ui.YamlViewerSplitterDistance = splitterDistance > 0 ? splitterDistance : null;
-            _configService.WriteConfig(_config);
-        }
-        catch (Exception ex)
-        {
-            SetStatus($"保存 YAML 窗口布局失败：{ex.Message}");
         }
     }
 
