@@ -132,11 +132,11 @@ public partial class Form1 : Form
         base64Panel.Controls.Add(_txtBase64, 0, 1);
         split.Panel1.Controls.Add(base64Panel);
 
-        // Message 类型和操作按钮放同一行，减少垂直占用。
-        var actionRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, AutoSize = true };
+        // Message 类型在上方，三种转换按钮放在下方同一行。
+        var actionRow = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 2, AutoSize = true };
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        actionRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        actionRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         actionRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         actionRow.Controls.Add(new Label { Text = "Message 类型（必填）", AutoSize = true, Padding = new Padding(0, 8, 8, 0) }, 0, 0);
         _cmbMessageType.Dock = DockStyle.Fill;
@@ -156,7 +156,7 @@ public partial class Form1 : Form
         };
         actionRow.Controls.Add(_cmbMessageType, 1, 0);
 
-        // 操作按钮固定为单行布局，避免窗口缩放时被裁剪隐藏。
+        // 操作按钮固定为单行布局，显示在 message 下拉框下方。
         var btnRow = new FlowLayoutPanel
         {
             AutoSize = true,
@@ -164,12 +164,18 @@ public partial class Form1 : Form
             FlowDirection = FlowDirection.LeftToRight,
             WrapContents = false,
             Anchor = AnchorStyles.Left,
-            Margin = new Padding(8, 0, 0, 0)
+            Margin = new Padding(0, 6, 0, 0)
         };
-        var btnDecode = new Button { Text = "base64->proto", AutoSize = true };
+        var btnDecode = new Button { Text = "->proto", AutoSize = true };
         btnDecode.Click += async (_, _) => await DecodeAsync();
         btnRow.Controls.Add(btnDecode);
-        actionRow.Controls.Add(btnRow, 2, 0);
+        var btnEncodeBase64 = new Button { Text = "proto->base64", AutoSize = true };
+        btnEncodeBase64.Click += async (_, _) => await EncodeAsync();
+        btnRow.Controls.Add(btnEncodeBase64);
+        var btnEncodeHex = new Button { Text = "proto->hex", AutoSize = true };
+        btnEncodeHex.Click += async (_, _) => await EncodeHexAsync();
+        btnRow.Controls.Add(btnEncodeHex);
+        actionRow.Controls.Add(btnRow, 1, 1);
 
         // 下半区包含操作行与三标签页预览区。
         var protoPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
@@ -281,30 +287,16 @@ public partial class Form1 : Form
         _tabYamlFold.Controls.Add(foldPanel);
     }
 
-    // 构建 Proto 编辑标签页并放置编码按钮。
+    // 构建 Proto 编辑标签页。
     private void BuildProtoTab()
     {
         _tabProto.Controls.Clear();
-        var protoPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Padding = new Padding(8) };
+        var protoPanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
         protoPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         protoPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        protoPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         protoPanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-
-        var btnRow = new FlowLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            WrapContents = false
-        };
-        var btnEncode = new Button { Text = "proto->base64", AutoSize = true };
-        btnEncode.Click += async (_, _) => await EncodeAsync();
-        btnRow.Controls.Add(btnEncode);
-
-        protoPanel.Controls.Add(btnRow, 0, 0);
-        protoPanel.Controls.Add(new Label { Text = "Proto 文本（可编辑）", AutoSize = true }, 0, 1);
-        protoPanel.Controls.Add(_txtProto, 0, 2);
+        protoPanel.Controls.Add(new Label { Text = "Proto 文本（可编辑）", AutoSize = true }, 0, 0);
+        protoPanel.Controls.Add(_txtProto, 0, 1);
         _tabProto.Controls.Add(protoPanel);
     }
 
@@ -755,6 +747,46 @@ public partial class Form1 : Form
             var bytes = _decoder.EncodeFromProtoText(prepared.ProtoText, scope);
             _txtBase64.Text = Base64Util.Encode(bytes);
             SetStatus(prepared.ConvertedFromJson ? "编码成功（JSON 已转 Proto）" : "编码成功");
+        }
+        catch (Exception ex)
+        {
+            SetStatus(ex.Message);
+        }
+        await Task.CompletedTask;
+    }
+
+    private async Task EncodeHexAsync()
+    {
+        try
+        {
+            if (_protoFiles.Count == 0)
+            {
+                throw new InvalidOperationException("未加载任何 proto 文件，请先到设置菜单添加路径。");
+            }
+
+            var selectedType = _cmbMessageType.Text.Trim();
+            var inputText = _txtProto.Text;
+
+            if (string.IsNullOrWhiteSpace(selectedType))
+            {
+                throw new InvalidOperationException("Message 类型不能为空，请先输入或选择一个 message 类型。");
+            }
+
+            if (_messageTypes.Count > 0 && !_messageTypes.Contains(selectedType, StringComparer.Ordinal))
+            {
+                throw new InvalidOperationException($"Message 类型不存在：{selectedType}");
+            }
+
+            var scope = _decoder.ResolveMessageScope(selectedType, _protoFiles);
+            var prepared = _decoder.PrepareProtoTextForEncode(inputText, scope);
+            if (prepared.ConvertedFromJson)
+            {
+                _txtProto.Text = prepared.ProtoText;
+            }
+
+            var bytes = _decoder.EncodeFromProtoText(prepared.ProtoText, scope);
+            _txtBase64.Text = Convert.ToHexString(bytes);
+            SetStatus(prepared.ConvertedFromJson ? "转 Hex 成功（JSON 已转 Proto）" : "转 Hex 成功");
         }
         catch (Exception ex)
         {
