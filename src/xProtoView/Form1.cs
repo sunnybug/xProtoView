@@ -690,7 +690,6 @@ public partial class Form1 : Form
 
             var bytes = Base64Util.Decode(_txtBase64.Text);
             var selectedType = _cmbMessageType.Text.Trim();
-            var includeDirs = _protoFileService.GetIncludeDirs(_config.Proto.PathEntries, _protoFiles);
 
             // message 为必填，禁止自动估分。
             if (string.IsNullOrWhiteSpace(selectedType))
@@ -703,7 +702,8 @@ public partial class Form1 : Form
                 throw new InvalidOperationException($"Message 类型不存在：{selectedType}");
             }
 
-            var protoText = _decoder.DecodeToProtoText(bytes, selectedType, includeDirs, _protoFiles);
+            var scope = _decoder.ResolveMessageScope(selectedType, _protoFiles);
+            var protoText = _decoder.DecodeToProtoText(bytes, scope);
             _txtProto.Text = protoText;
             if (TryRefreshYamlViews(force: true, out var yamlError))
             {
@@ -731,8 +731,7 @@ public partial class Form1 : Form
             }
 
             var selectedType = _cmbMessageType.Text.Trim();
-            var includeDirs = _protoFileService.GetIncludeDirs(_config.Proto.PathEntries, _protoFiles);
-            var protoText = _txtProto.Text;
+            var inputText = _txtProto.Text;
 
             // message 为必填，禁止空类型编码。
             if (string.IsNullOrWhiteSpace(selectedType))
@@ -745,9 +744,17 @@ public partial class Form1 : Form
                 throw new InvalidOperationException($"Message 类型不存在：{selectedType}");
             }
 
-            var bytes = _decoder.EncodeFromProtoText(protoText, selectedType, includeDirs, _protoFiles);
+            var scope = _decoder.ResolveMessageScope(selectedType, _protoFiles);
+            var prepared = _decoder.PrepareProtoTextForEncode(inputText, scope);
+            if (prepared.ConvertedFromJson)
+            {
+                // JSON 输入已按 message 字段类型转为 proto 文本并回填。
+                _txtProto.Text = prepared.ProtoText;
+            }
+
+            var bytes = _decoder.EncodeFromProtoText(prepared.ProtoText, scope);
             _txtBase64.Text = Base64Util.Encode(bytes);
-            SetStatus("编码成功");
+            SetStatus(prepared.ConvertedFromJson ? "编码成功（JSON 已转 Proto）" : "编码成功");
         }
         catch (Exception ex)
         {

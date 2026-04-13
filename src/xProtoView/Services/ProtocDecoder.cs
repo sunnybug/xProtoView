@@ -5,12 +5,39 @@ namespace xProtoView.Services;
 
 public sealed class ProtocDecoder
 {
+    public sealed record ProtoMessageScope(string TypeName, string ProtoFile, string IncludeDir);
+
+    public sealed record ProtoInputPreparation(string ProtoText, bool ConvertedFromJson);
+
+    private static readonly Regex PackageRegex = new(@"^\s*package\s+([A-Za-z_][\w.]*)\s*;", RegexOptions.Compiled);
+    private static readonly Regex MessageRegex = new(@"^\s*message\s+([A-Za-z_]\w*)\s*\{?", RegexOptions.Compiled);
+
+    // 解析 message 对应的 proto 文件与 include 目录。
+    public ProtoMessageScope ResolveMessageScope(string typeName, IReadOnlyList<string> protoFiles)
+    {
+        var normalizedTypeName = (typeName ?? string.Empty).Trim();
+        if (normalizedTypeName.Length == 0)
+        {
+            throw new InvalidOperationException("Message 类型不能为空。");
+        }
+
+        var messageFileMap = BuildMessageTypeFileMap(protoFiles);
+        if (!messageFileMap.TryGetValue(normalizedTypeName, out var protoFile))
+        {
+            throw new InvalidOperationException($"无法定位 Message 类型对应的 proto 文件：{normalizedTypeName}");
+        }
+
+        var includeDir = Path.GetDirectoryName(protoFile);
+        if (string.IsNullOrWhiteSpace(includeDir))
+        {
+            throw new InvalidOperationException($"无法解析 Message 所在目录：{normalizedTypeName}（{protoFile}）");
+        }
+
+        return new ProtoMessageScope(normalizedTypeName, protoFile, includeDir);
+    }
+
     // 将二进制 proto 解码为 proto 文本。
-    public string DecodeToProtoText(
-        byte[] payload,
-        string typeName,
-        IReadOnlyList<string> includeDirs,
-        IReadOnlyList<string> protoFiles)
+    public string DecodeToProtoText(byte[] payload, ProtoMessageScope scope)
     {
         var protoc = ResolveProtocPath();
         if (!File.Exists(protoc))
@@ -18,9 +45,12 @@ public sealed class ProtocDecoder
             throw new InvalidOperationException($"未找到 protoc：{protoc}");
         }
 
-        var args = new List<string> { $"--decode={typeName}" };
-        args.AddRange(includeDirs.Select(x => $"-I\"{x}\""));
-        args.AddRange(protoFiles.Select(x => $"\"{x}\""));
+        var args = new List<string>
+        {
+            $"--decode={scope.TypeName}",
+            $"-I\"{scope.IncludeDir}\"",
+            $"\"{scope.ProtoFile}\""
+        };
         var output = ExecuteProtoc(protoc, string.Join(" ", args), payload, out var stderr);
         if (string.IsNullOrWhiteSpace(output))
         {
@@ -29,12 +59,26 @@ public sealed class ProtocDecoder
         return output;
     }
 
+    // 编码前按需将 JSON 转为 proto 文本。
+    public ProtoInputPreparation PrepareProtoTextForEncode(string protoOrJsonText, ProtoMessageScope scope)
+    {
+        var raw = (protoOrJsonText ?? string.Empty).Trim();
+        if (raw.Length == 0)
+        {
+            throw new InvalidOperationException("Proto 文本为空。");
+        }
+
+        if (!JsonProtoTextConverter.LooksLikeJson(raw))
+        {
+            return new ProtoInputPreparation(raw, false);
+        }
+
+        var convertedProtoText = JsonProtoTextConverter.Convert(raw, scope, ResolveProtocPath);
+        return new ProtoInputPreparation(convertedProtoText, true);
+    }
+
     // 将 proto 文本编码为二进制 proto。
-    public byte[] EncodeFromProtoText(
-        string protoText,
-        string typeName,
-        IReadOnlyList<string> includeDirs,
-        IReadOnlyList<string> protoFiles)
+    public byte[] EncodeFromProtoText(string protoText, ProtoMessageScope scope)
     {
         var raw = (protoText ?? string.Empty).Trim();
         if (raw.Length == 0)
@@ -48,9 +92,12 @@ public sealed class ProtocDecoder
             throw new InvalidOperationException($"未找到 protoc：{protoc}");
         }
 
-        var args = new List<string> { $"--encode={typeName}" };
-        args.AddRange(includeDirs.Select(x => $"-I\"{x}\""));
-        args.AddRange(protoFiles.Select(x => $"\"{x}\""));
+        var args = new List<string>
+        {
+            $"--encode={scope.TypeName}",
+            $"-I\"{scope.IncludeDir}\"",
+            $"\"{scope.ProtoFile}\""
+        };
         var output = ExecuteProtocBinary(protoc, string.Join(" ", args), raw, out var stderr);
         if (output.Length == 0)
         {
@@ -61,37 +108,60 @@ public sealed class ProtocDecoder
 
     public static List<string> ExtractMessageTypes(IEnumerable<string> protoFiles)
     {
-        var result = new HashSet<string>(StringComparer.Ordinal);
-        var packageRegex = new Regex(@"^\s*package\s+([A-Za-z_][\w.]*)\s*;", RegexOptions.Compiled);
-        var messageRegex = new Regex(@"^\s*message\s+([A-Za-z_]\w*)\s*\{?", RegexOptions.Compiled);
+        return BuildMessageTypeFileMap(protoFiles)
+            .Keys
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+    }
 
-        foreach (var file in protoFiles)
+    // 建立 message 到 proto 文件路径的映射。
+    private static Dictionary<string, string> BuildMessageTypeFileMap(IEnumerable<string> protoFiles)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        foreach (var rawPath in protoFiles)
         {
+            var file = Path.GetFullPath(rawPath);
+            if (!File.Exists(file))
+            {
+                throw new InvalidOperationException($"proto 文件不存在：{file}");
+            }
+
             var packageName = string.Empty;
-            var lines = File.ReadAllLines(file);
             var stack = new Stack<string>();
+            var lines = File.ReadAllLines(file);
 
             foreach (var raw in lines)
             {
                 var line = raw.Split("//")[0];
-                if (line.TrimStart().StartsWith("/*", StringComparison.Ordinal)) continue;
+                if (line.TrimStart().StartsWith("/*", StringComparison.Ordinal))
+                {
+                    continue;
+                }
 
-                var packageMatch = packageRegex.Match(line);
+                var packageMatch = PackageRegex.Match(line);
                 if (packageMatch.Success)
                 {
                     packageName = packageMatch.Groups[1].Value.Trim();
                 }
 
-                var msgMatch = messageRegex.Match(line);
+                var msgMatch = MessageRegex.Match(line);
                 if (msgMatch.Success)
                 {
                     var name = msgMatch.Groups[1].Value.Trim();
-                    var full = string.Join(".", stack.Reverse().Append(name));
+                    var fullName = string.Join(".", stack.Reverse().Append(name));
                     if (!string.IsNullOrWhiteSpace(packageName))
                     {
-                        full = $"{packageName}.{full}";
+                        fullName = $"{packageName}.{fullName}";
                     }
-                    result.Add(full);
+
+                    if (map.TryGetValue(fullName, out var existing) &&
+                        !string.Equals(existing, file, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new InvalidOperationException($"Message 类型重复定义：{fullName}（{existing} / {file}）");
+                    }
+
+                    map[fullName] = file;
                     stack.Push(name);
                 }
 
@@ -105,7 +175,7 @@ public sealed class ProtocDecoder
             }
         }
 
-        return result.OrderBy(x => x, StringComparer.Ordinal).ToList();
+        return map;
     }
 
     private static string ExecuteProtoc(string protocPath, string arguments, byte[]? input, out string stderr)
