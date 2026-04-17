@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using System.Text;
 using xProtoView.Services;
 using YamlDotNet.RepresentationModel;
 
@@ -40,6 +41,8 @@ public partial class Form1 : Form
     private readonly TabPage _tabYaml = new("YAML");
     private readonly TabPage _tabYamlFold = new("YAML折叠");
     private readonly TabPage _tabProto = new("Proto");
+    private readonly TabPage _tabMessage = new("message");
+    private readonly TextBox _txtMessageInfo = new() { Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false, ReadOnly = true, Dock = DockStyle.Fill };
     private bool _isYamlDirty = true;
 
     public Form1()
@@ -143,6 +146,8 @@ public partial class Form1 : Form
         // 输入时实时过滤 message 类型，便于快速定位。
         _cmbMessageType.TextUpdate += (_, _) =>
             ApplyMessageTypeFilter(_cmbMessageType.Text, _cmbMessageType.SelectionStart, expandDropDown: true);
+        _cmbMessageType.SelectedIndexChanged += (_, _) => RefreshMessageTab();
+        _cmbMessageType.TextChanged += (_, _) => RefreshMessageTab();
         // 手动展开下拉时强制显示全量列表，避免输入文本导致候选被隐藏。
         _cmbMessageType.DropDown += (_, _) =>
         {
@@ -197,8 +202,9 @@ public partial class Form1 : Form
         BuildYamlTab();
         BuildYamlFoldTab();
         BuildProtoTab();
+        BuildMessageTab();
         _tabProtoView.TabPages.Clear();
-        _tabProtoView.TabPages.AddRange([_tabYaml, _tabYamlFold, _tabProto]);
+        _tabProtoView.TabPages.AddRange([_tabYaml, _tabYamlFold, _tabProto, _tabMessage]);
         // 默认进入 YAML 标签页。
         _tabProtoView.SelectedTab = _tabYaml;
         _tabProtoView.SelectedIndexChanged += (_, _) => OnProtoViewTabChanged();
@@ -206,6 +212,7 @@ public partial class Form1 : Form
         _txtProto.TextChanged += (_, _) => _isYamlDirty = true;
         // 初始为空时显示占位提示。
         ShowYamlMessage("Proto 文本为空，暂无 YAML 预览。");
+        RefreshMessageTab();
         return _tabProtoView;
     }
 
@@ -298,6 +305,20 @@ public partial class Form1 : Form
         protoPanel.Controls.Add(new Label { Text = "Proto 文本（可编辑）", AutoSize = true }, 0, 0);
         protoPanel.Controls.Add(_txtProto, 0, 1);
         _tabProto.Controls.Add(protoPanel);
+    }
+
+    // 构建 message 信息标签页。
+    private void BuildMessageTab()
+    {
+        _tabMessage.Controls.Clear();
+        var messagePanel = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Padding = new Padding(8) };
+        messagePanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        messagePanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        messagePanel.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        messagePanel.Controls.Add(new Label { Text = "当前选中的 message 信息", AutoSize = true }, 0, 0);
+        _txtMessageInfo.Font = new Font("Consolas", 10.5f, FontStyle.Regular);
+        messagePanel.Controls.Add(_txtMessageInfo, 0, 1);
+        _tabMessage.Controls.Add(messagePanel);
     }
 
     // 切换到 YAML 相关标签页时刷新 YAML 预览。
@@ -596,14 +617,214 @@ public partial class Form1 : Form
             _messageTypes = ProtocDecoder.ExtractMessageTypes(_protoFiles);
             _cmbMessageType.Items.Clear();
             _cmbMessageType.Items.AddRange(_messageTypes.Cast<object>().ToArray());
+            RefreshMessageTab();
             // 成功加载时不显示数量提示，避免干扰界面。
             SetStatus(string.Empty);
         }
         catch (Exception ex)
         {
             SetStatus(ex.Message);
+            _txtMessageInfo.Text = "message 信息加载失败。";
         }
         await Task.CompletedTask;
+    }
+
+    // 刷新 message 标签页，展示当前 message 和其 proto 文件绝对路径。
+    private void RefreshMessageTab()
+    {
+        var selectedType = _cmbMessageType.Text.Trim();
+        if (string.IsNullOrWhiteSpace(selectedType))
+        {
+            _txtMessageInfo.Text = "未选择 message 类型。";
+            return;
+        }
+
+        if (_messageTypes.Count > 0 && !_messageTypes.Contains(selectedType, StringComparer.Ordinal))
+        {
+            _txtMessageInfo.Text = $"当前输入的 message 类型不在候选列表中：{selectedType}";
+            return;
+        }
+
+        if (_protoFiles.Count == 0)
+        {
+            _txtMessageInfo.Text = "尚未加载 proto 文件，请先在设置中配置路径。";
+            return;
+        }
+
+        try
+        {
+            var scope = _decoder.ResolveMessageScope(selectedType, _protoFiles);
+            var messageDefinition = ExtractMessageDefinitionBlock(scope.ProtoFile, scope.TypeName);
+            _txtMessageInfo.Text =
+                $"Message 类型:{Environment.NewLine}{scope.TypeName}{Environment.NewLine}{Environment.NewLine}" +
+                $"所在文件绝对路径:{Environment.NewLine}{scope.ProtoFile}{Environment.NewLine}{Environment.NewLine}" +
+                $"完整定义源码块:{Environment.NewLine}{messageDefinition}";
+        }
+        catch (Exception ex)
+        {
+            _txtMessageInfo.Text = $"无法解析 message 所在文件：{ex.Message}";
+        }
+    }
+
+    // 从 proto 文件提取目标 message 的完整源码块（包含嵌套内容）。
+    private static string ExtractMessageDefinitionBlock(string protoFilePath, string fullTypeName)
+    {
+        if (!File.Exists(protoFilePath))
+        {
+            return "未找到 proto 文件。";
+        }
+
+        var lines = File.ReadAllLines(protoFilePath);
+        if (lines.Length == 0)
+        {
+            return "proto 文件为空。";
+        }
+
+        var packageName = string.Empty;
+        var packageRegex = new Regex(@"^\s*package\s+([A-Za-z_][\w.]*)\s*;", RegexOptions.Compiled);
+        foreach (var raw in lines)
+        {
+            var packageMatch = packageRegex.Match(raw);
+            if (packageMatch.Success)
+            {
+                packageName = packageMatch.Groups[1].Value.Trim();
+                break;
+            }
+        }
+
+        var normalizedTypeName = fullTypeName.Trim();
+        var typeSegments = normalizedTypeName.Split('.', StringSplitOptions.RemoveEmptyEntries).ToList();
+        if (!string.IsNullOrWhiteSpace(packageName))
+        {
+            var packageSegments = packageName.Split('.', StringSplitOptions.RemoveEmptyEntries);
+            if (typeSegments.Count >= packageSegments.Length &&
+                typeSegments.Take(packageSegments.Length).SequenceEqual(packageSegments, StringComparer.Ordinal))
+            {
+                typeSegments = typeSegments.Skip(packageSegments.Length).ToList();
+            }
+        }
+
+        if (typeSegments.Count == 0)
+        {
+            return "无法解析 message 名称。";
+        }
+
+        var messageRegex = new Regex(@"\bmessage\s+([A-Za-z_]\w*)\b", RegexOptions.Compiled);
+        var messageStack = new Stack<(string Name, int OpenDepth, int StartLine)>();
+        string? pendingMessageName = null;
+        int? pendingMessageLine = null;
+        var targetPath = string.Join(".", typeSegments);
+        var currentPath = new List<string>();
+        var braceDepth = 0;
+        var inBlockComment = false;
+        var targetStartLine = -1;
+        var targetEndLine = -1;
+
+        for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
+        {
+            var sanitized = StripComments(lines[lineIndex], ref inBlockComment);
+            if (string.IsNullOrWhiteSpace(sanitized))
+            {
+                continue;
+            }
+
+            if (pendingMessageName is null)
+            {
+                var match = messageRegex.Match(sanitized);
+                if (match.Success)
+                {
+                    pendingMessageName = match.Groups[1].Value;
+                    pendingMessageLine = lineIndex;
+                }
+            }
+
+            foreach (var ch in sanitized)
+            {
+                if (ch == '{')
+                {
+                    braceDepth++;
+                    if (pendingMessageName is not null && pendingMessageLine.HasValue)
+                    {
+                        messageStack.Push((pendingMessageName, braceDepth, pendingMessageLine.Value));
+                        currentPath.Add(pendingMessageName);
+                        var joinedPath = string.Join(".", currentPath);
+                        if (targetStartLine < 0 && string.Equals(joinedPath, targetPath, StringComparison.Ordinal))
+                        {
+                            targetStartLine = pendingMessageLine.Value;
+                        }
+                        pendingMessageName = null;
+                        pendingMessageLine = null;
+                    }
+                }
+                else if (ch == '}')
+                {
+                    if (messageStack.Count > 0 && messageStack.Peek().OpenDepth == braceDepth)
+                    {
+                        var top = messageStack.Pop();
+                        var joinedPath = string.Join(".", currentPath);
+                        if (targetStartLine >= 0 &&
+                            targetEndLine < 0 &&
+                            string.Equals(joinedPath, targetPath, StringComparison.Ordinal) &&
+                            top.StartLine == targetStartLine)
+                        {
+                            targetEndLine = lineIndex;
+                        }
+
+                        if (currentPath.Count > 0)
+                        {
+                            currentPath.RemoveAt(currentPath.Count - 1);
+                        }
+                    }
+
+                    braceDepth = Math.Max(0, braceDepth - 1);
+                }
+            }
+        }
+
+        if (targetStartLine < 0 || targetEndLine < targetStartLine)
+        {
+            return "未在 proto 文件中定位到该 message 的完整定义。";
+        }
+
+        var block = string.Join(Environment.NewLine, lines.Skip(targetStartLine).Take(targetEndLine - targetStartLine + 1));
+        return block.TrimEnd();
+    }
+
+    // 去除单行注释与块注释，保留结构字符以便括号计数。
+    private static string StripComments(string line, ref bool inBlockComment)
+    {
+        var sb = new StringBuilder(line.Length);
+        for (var i = 0; i < line.Length; i++)
+        {
+            var current = line[i];
+            var next = i + 1 < line.Length ? line[i + 1] : '\0';
+
+            if (inBlockComment)
+            {
+                if (current == '*' && next == '/')
+                {
+                    inBlockComment = false;
+                    i++;
+                }
+                continue;
+            }
+
+            if (current == '/' && next == '*')
+            {
+                inBlockComment = true;
+                i++;
+                continue;
+            }
+
+            if (current == '/' && next == '/')
+            {
+                break;
+            }
+
+            sb.Append(current);
+        }
+
+        return sb.ToString();
     }
 
     // 启动时检查新版本，仅在可自动更新时显示菜单。
@@ -695,7 +916,7 @@ public partial class Form1 : Form
             }
 
             var scope = _decoder.ResolveMessageScope(selectedType, _protoFiles);
-            var protoText = _decoder.DecodeToProtoText(bytes, scope);
+            var protoText = _decoder.DecodeToProtoText(bytes, scope, _protoFiles);
             _txtProto.Text = protoText;
             if (TryRefreshYamlViews(force: true, out var yamlError))
             {
