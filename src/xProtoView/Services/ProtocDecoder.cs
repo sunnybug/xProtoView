@@ -27,11 +27,7 @@ public sealed class ProtocDecoder
             throw new InvalidOperationException($"无法定位 Message 类型对应的 proto 文件：{normalizedTypeName}");
         }
 
-        var includeDir = Path.GetDirectoryName(protoFile);
-        if (string.IsNullOrWhiteSpace(includeDir))
-        {
-            throw new InvalidOperationException($"无法解析 Message 所在目录：{normalizedTypeName}（{protoFile}）");
-        }
+        var includeDir = ResolveIncludeDir(protoFile, normalizedTypeName);
 
         return new ProtoMessageScope(normalizedTypeName, protoFile, includeDir);
     }
@@ -44,11 +40,12 @@ public sealed class ProtocDecoder
         {
             throw new InvalidOperationException($"未找到 protoc：{protoc}");
         }
+        var includeDir = ResolveIncludeDir(scope.ProtoFile, scope.TypeName);
 
         var args = new List<string>
         {
             $"--decode={scope.TypeName}",
-            $"-I\"{scope.IncludeDir}\"",
+            $"-I\"{includeDir}\"",
             $"\"{scope.ProtoFile}\""
         };
         var output = ExecuteProtoc(protoc, string.Join(" ", args), payload, out var stderr);
@@ -91,11 +88,12 @@ public sealed class ProtocDecoder
         {
             throw new InvalidOperationException($"未找到 protoc：{protoc}");
         }
+        var includeDir = ResolveIncludeDir(scope.ProtoFile, scope.TypeName);
 
         var args = new List<string>
         {
             $"--encode={scope.TypeName}",
-            $"-I\"{scope.IncludeDir}\"",
+            $"-I\"{includeDir}\"",
             $"\"{scope.ProtoFile}\""
         };
         var output = ExecuteProtocBinary(protoc, string.Join(" ", args), raw, out var stderr);
@@ -283,5 +281,15 @@ public sealed class ProtocDecoder
         }
 
         return "protoc";
+    }
+
+    private static string ResolveIncludeDir(string protoFile, string typeName)
+    {
+        var includeDir = Path.GetDirectoryName(protoFile);
+        if (string.IsNullOrWhiteSpace(includeDir))
+        {
+            throw new InvalidOperationException($"无法解析 Message 所在目录：{typeName}（{protoFile}）");
+        }
+        return includeDir;
     }
 }

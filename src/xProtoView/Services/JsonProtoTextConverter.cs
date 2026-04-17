@@ -253,11 +253,16 @@ internal static class JsonProtoTextConverter
         {
             throw new InvalidOperationException($"未找到 protoc：{protoc}");
         }
+        var includeDir = Path.GetDirectoryName(scope.ProtoFile);
+        if (string.IsNullOrWhiteSpace(includeDir))
+        {
+            throw new InvalidOperationException($"无法解析 Message 所在目录：{scope.TypeName}（{scope.ProtoFile}）");
+        }
 
         var descriptorPath = Path.Combine(Path.GetTempPath(), $"xProtoView.{Guid.NewGuid():N}.desc");
         try
         {
-            var args = $"-I\"{scope.IncludeDir}\" --include_imports --descriptor_set_out=\"{descriptorPath}\" \"{scope.ProtoFile}\"";
+            var args = $"-I\"{includeDir}\" --include_imports --descriptor_set_out=\"{descriptorPath}\" \"{scope.ProtoFile}\"";
             ExecuteProcess(protoc, args, null);
             if (!File.Exists(descriptorPath))
             {
