@@ -19,6 +19,27 @@ public class Base64UtilTests
     }
 
     [Fact]
+    public void Decode_ShouldReturnBytes_WhenInputIsBinary()
+    {
+        var bytes = Base64Util.Decode("0100100001100101011011000110110001101111");
+        Assert.Equal("Hello", System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    [Fact]
+    public void Decode_ShouldReturnBytes_WhenInputIsBinaryWithPrefixAndSeparators()
+    {
+        var bytes = Base64Util.Decode("0b01001000 0b01100101,0b01101100-0b01101100:0b01101111");
+        Assert.Equal("Hello", System.Text.Encoding.UTF8.GetString(bytes));
+    }
+
+    [Fact]
+    public void Decode_ShouldThrow_WhenBinaryLengthIsNotByteAligned()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(() => Base64Util.Decode("0b0101"));
+        Assert.Contains("每个字节需要 8 位", ex.Message);
+    }
+
+    [Fact]
     public void Decode_ShouldReturnBytes_WhenInputIsHex()
     {
         // 纯十六进制输入应被识别并正常解码。
